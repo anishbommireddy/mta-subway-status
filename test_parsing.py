@@ -51,6 +51,57 @@ def build_fake_feed():
     return feed
 
 
+def build_active_period_feed(now: float):
+    """Alerts exercising active_period filtering: one whose window has
+    already ended, one whose window hasn't started yet, one active right
+    now, and one with no active_period at all (always active)."""
+    feed = gtfs_realtime_pb2.FeedMessage()
+    feed.header.gtfs_realtime_version = "1.0"
+
+    # Past: ended an hour ago — should be filtered OUT
+    past = feed.entity.add()
+    past.id = "alert-past"
+    past.alert.effect = 4
+    period = past.alert.active_period.add()
+    period.start = int(now - 7200)
+    period.end = int(now - 3600)
+    ie = past.alert.informed_entity.add()
+    ie.route_id = "G"
+    past.alert.header_text.translation.add(text="Past G alert", language="en")
+
+    # Future: starts in an hour — should be filtered OUT
+    future = feed.entity.add()
+    future.id = "alert-future"
+    future.alert.effect = 4
+    period = future.alert.active_period.add()
+    period.start = int(now + 3600)
+    period.end = int(now + 7200)
+    ie = future.alert.informed_entity.add()
+    ie.route_id = "G"
+    future.alert.header_text.translation.add(text="Future G alert", language="en")
+
+    # Current: started an hour ago, ends in an hour — should survive
+    current = feed.entity.add()
+    current.id = "alert-current"
+    current.alert.effect = 4
+    period = current.alert.active_period.add()
+    period.start = int(now - 3600)
+    period.end = int(now + 3600)
+    ie = current.alert.informed_entity.add()
+    ie.route_id = "G"
+    current.alert.header_text.translation.add(text="Current G alert", language="en")
+
+    # No active_period at all — always active, should survive
+    always = feed.entity.add()
+    always.id = "alert-always"
+    always.alert.effect = 4
+    ie = always.alert.informed_entity.add()
+    ie.route_id = "G"
+    always.alert.header_text.translation.add(text="Always-on G alert", language="en")
+
+    return feed
+
+
 def build_fake_trip_update_feed(now: float):
     feed = gtfs_realtime_pb2.FeedMessage()
     feed.header.gtfs_realtime_version = "1.0"
@@ -112,9 +163,17 @@ def main():
     assert none_found == []
     print("PASS: line with no alerts returns empty list")
 
-    # --- trip updates (next-train arrivals) ---
+    # --- active_period filtering (the "why is a Tuesday showing a Sunday
+    # schedule alert" bug) ---
     import time
     now = time.time()
+
+    ap_feed = build_active_period_feed(now)
+    ap_alerts = _parse_alert_entities(ap_feed, wanted=None, now=now)
+    headers = {a["header"] for a in ap_alerts}
+    assert headers == {"Current G alert", "Always-on G alert"}, headers
+    print("PASS: active_period filtering drops past/future alerts, keeps "
+          "current and always-on ones")
     tu_feed = build_fake_trip_update_feed(now)
 
     arrivals = _parse_trip_update_entities(

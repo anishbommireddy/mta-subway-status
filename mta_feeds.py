@@ -268,18 +268,46 @@ def fetch_alerts(lines: list[str] | None = None, timeout: float = 10.0) -> list[
     feed = gtfs_realtime_pb2.FeedMessage()
     feed.ParseFromString(resp.content)
 
-    return _parse_alert_entities(feed, wanted)
+    return _parse_alert_entities(feed, wanted, now=time.time())
 
 
-def _parse_alert_entities(feed, wanted: set[str] | None) -> list[dict]:
+def _alert_is_active(alert, now: float) -> bool:
+    """Whether an Alert is actually in effect at `now`.
+
+    Per the GTFS-realtime spec, an Alert's `active_period` is a list of
+    {start, end} unix-timestamp ranges (either bound may be unset, meaning
+    unbounded in that direction), and the alert applies if `now` falls in
+    ANY of them. An Alert with no active_period at all is always active.
+    The feed is not required to prune periods once they've lapsed — MTA's
+    feed in particular carries alerts for recurring/scheduled maintenance
+    windows well past or before they apply — so skipping this check makes
+    every alert the feed has ever staged look simultaneously live (e.g. a
+    "Sunday Schedule" notice showing up on a Tuesday).
+    """
+    if not alert.active_period:
+        return True
+    for period in alert.active_period:
+        start = period.start if period.start else None
+        end = period.end if period.end else None
+        if (start is None or start <= now) and (end is None or now <= end):
+            return True
+    return False
+
+
+def _parse_alert_entities(feed, wanted: set[str] | None, now: float | None = None) -> list[dict]:
     """Pull Alert entities out of a parsed FeedMessage. Split out from
     fetch_alerts() so tests can feed it a synthetic FeedMessage directly."""
+    if now is None:
+        now = time.time()
     results = []
 
     for entity in feed.entity:
         if not entity.HasField("alert"):
             continue
         alert = entity.alert
+
+        if not _alert_is_active(alert, now):
+            continue  # not in effect right now (past/future active_period)
 
         routes = sorted({
             ie.route_id
