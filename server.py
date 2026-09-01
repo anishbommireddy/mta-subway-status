@@ -18,11 +18,14 @@ which starts a Streamable HTTP server on 0.0.0.0:$PORT.
 
 import os
 import sys
+import urllib.parse
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 from mta_feeds import KNOWN_LINES, fetch_alerts, fetch_next_trains, search_stations
+
+_MAPS_TRAVEL_MODES = {"transit", "walking", "driving", "bicycling"}
 
 # Cap how many distinct real-world stations a fuzzy get_next_trains()
 # query is allowed to resolve to before we bail and ask for something
@@ -193,6 +196,46 @@ def get_next_trains(station: str, lines: list[str] | None = None, limit: int = 6
         })
 
     return {"station_query": station, "stations": stations_out}
+
+
+@mcp.tool()
+def get_directions_link(destination: str, origin: str | None = None, mode: str = "transit") -> dict:
+    """
+    Build a Google Maps directions link — no API key needed, just a URL.
+
+    This server has no way to know your live location (it runs in the
+    cloud, not on your phone), so if you omit `origin`, don't expect the
+    link to already have a starting point baked in. Instead, opening the
+    returned link on a phone lets the Google Maps *app* itself fall back
+    to your device's live GPS location as the starting point — that
+    resolution happens locally on your phone, not through this server.
+
+    Args:
+        destination: address, place name, or landmark to route to, e.g.
+                     "Canal St, Chinatown, Manhattan" or "Court Sq-23 St".
+        origin: optional starting address/place. Omit to let Google Maps
+                use the device's current location when the link is opened.
+        mode: one of "transit" (default), "walking", "driving", "bicycling".
+
+    Returns:
+        {"url": "..."} and, when `origin` was omitted, a "note" explaining
+        that the starting point resolves on the device, not here. Returns
+        an "error" if `mode` isn't one of the recognized values.
+    """
+    if mode not in _MAPS_TRAVEL_MODES:
+        return {"error": f"Unknown mode '{mode}'. Use one of: {sorted(_MAPS_TRAVEL_MODES)}"}
+
+    params = {"api": "1", "destination": destination, "travelmode": mode}
+    if origin:
+        params["origin"] = origin
+
+    result = {"url": "https://www.google.com/maps/dir/?" + urllib.parse.urlencode(params)}
+    if not origin:
+        result["note"] = (
+            "No origin given — opening this link on a phone lets Google Maps "
+            "use the device's live location as the starting point."
+        )
+    return result
 
 
 if __name__ == "__main__":

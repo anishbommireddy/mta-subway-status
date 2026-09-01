@@ -16,13 +16,19 @@ by MTA's live GTFS-realtime feeds:
 - **`get_next_trains(station, lines, limit)`** — live predicted
   arrival times at a station, across the lines that serve it (or a
   subset you specify).
+- **`get_directions_link(destination, origin, mode)`** — builds a
+  Google Maps directions URL (no API key needed). If `origin` is
+  omitted, opening the link on a phone lets the Maps app fall back to
+  the device's live GPS location as the starting point — that
+  resolution happens on-device, not through this server, since this
+  server has no way to know where you are.
 
-**What it deliberately doesn't do:** no multi-leg trip planning
-("route me from A to B") — MTA doesn't publish a subway directions API;
-their app's trip planner runs OpenTripPlanner behind the scenes, not
-something exposed publicly. Building that would mean computing routes
-ourselves on top of the static GTFS graph, which is a bigger project
-than these three tools.
+**What it deliberately doesn't do:** no multi-leg trip planning computed
+server-side ("route me from A to B" with actual step-by-step transit
+directions) — MTA doesn't publish a subway directions API, and building
+one ourselves would mean routing over the static GTFS graph, a bigger
+project than these tools. `get_directions_link` sidesteps this by
+handing off to Google Maps instead of computing routes itself.
 
 **No MTA API key needed** — subway GTFS-realtime feeds have been
 open/keyless since 2024. If you later add bus data, that still requires
@@ -135,8 +141,12 @@ your Fly.io server → MTA, and back.
   essentially never change, but if MTA opens a new station or
   reroutes a line permanently, this needs regenerating from a fresh
   `https://rrgtfsfeeds.s3.amazonaws.com/gtfs_subway.zip`.
-- No live directions/trip-planning tool (see above) — `find_stations`
-  + `get_next_trains` + `get_subway_alerts` together answer "what's
-  running and when's the next train," but not "what's the best way to
-  get from A to B." Building that would mean routing over the static
-  GTFS graph yourself (or wiring in an external directions API).
+- No trip-planning tool that returns actual routing steps in-chat (see
+  above) — `find_stations` + `get_next_trains` + `get_subway_alerts`
+  answer "what's running and when's the next train," and
+  `get_directions_link` hands off "what's the best way to get from A to
+  B" to Google Maps rather than computing it here. A future step would
+  be calling Google's Directions API server-side (needs a billed API
+  key) to pull the routing steps back into the conversation instead of
+  just linking out — but then an explicit origin is required every
+  time, since the server still can't see your live location.
