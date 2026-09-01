@@ -20,10 +20,30 @@ import os
 import sys
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from mta_feeds import KNOWN_LINES, fetch_alerts
 
-mcp = FastMCP("mta-subway-status")
+# FastMCP's DNS-rebinding protection defaults to only trusting
+# localhost/127.0.0.1 Host headers, which 421s every request once this
+# is deployed behind a real public hostname (Render, Fly, etc.) — so we
+# add the deployed host explicitly. Render sets RENDER_EXTERNAL_HOSTNAME
+# automatically; other hosts would need their own equivalent env var.
+_allowed_hosts = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+_allowed_origins = ["http://127.0.0.1:*", "http://localhost:*"]
+_external_host = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
+if _external_host:
+    _allowed_hosts.append(_external_host)
+    _allowed_origins.append(f"https://{_external_host}")
+
+mcp = FastMCP(
+    "mta-subway-status",
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=_allowed_hosts,
+        allowed_origins=_allowed_origins,
+    ),
+)
 
 
 @mcp.tool()
