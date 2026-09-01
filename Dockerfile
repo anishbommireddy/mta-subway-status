@@ -6,6 +6,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY mta_feeds.py server.py ./
+COPY data/ ./data/
 
 # Fly.io / Render both set $PORT for you; default to 8000 for local runs.
 ENV PORT=8000
