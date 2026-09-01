@@ -1,16 +1,28 @@
-# mta-subway-status — MCP server (v1)
+# mta-subway-status — MCP server
 
-Lets Claude answer "any delays or lines not running right now" for the
-NYC subway, from any Claude client (web, mobile, desktop) — by exposing
-one tool, `get_subway_alerts`, backed by MTA's live GTFS-realtime alerts
-feed.
+Lets Claude answer questions like "any delays on the E right now" and
+"when's the next 6 train at Union Sq" for the NYC subway, from any
+Claude client (web, mobile, desktop) — by exposing three tools backed
+by MTA's live GTFS-realtime feeds:
 
-**What it does:** current service alerts — delays, planned repair work,
-reroutes, "no service" notices — optionally filtered to specific lines
-(e.g. `["7", "E", "M", "G"]`).
+- **`get_subway_alerts(lines)`** — current service alerts: delays,
+  planned repair work, reroutes, "no service" notices — optionally
+  filtered to specific lines (e.g. `["7", "E", "M", "G"]`).
+- **`find_stations(query)`** — look up stations by name (e.g. "union
+  sq") to see which lines serve them and get their stop_ids. Several
+  distinct real-world stations can share a name (four different "103
+  St"s, for instance) — all matches come back so you can disambiguate
+  by route.
+- **`get_next_trains(station, lines, limit)`** — live predicted
+  arrival times at a station, across the lines that serve it (or a
+  subset you specify).
 
-**What it deliberately doesn't do (v1 scope):** no live arrival
-countdowns, no route optimization. Just "what's broken right now."
+**What it deliberately doesn't do:** no multi-leg trip planning
+("route me from A to B") — MTA doesn't publish a subway directions API;
+their app's trip planner runs OpenTripPlanner behind the scenes, not
+something exposed publicly. Building that would mean computing routes
+ourselves on top of the static GTFS graph, which is a bigger project
+than these three tools.
 
 **No MTA API key needed** — subway GTFS-realtime feeds have been
 open/keyless since 2024. If you later add bus data, that still requires
@@ -18,8 +30,9 @@ a free key from https://bustime.mta.info/wiki/Developers/Index.
 
 ## Tested so far
 
-- `test_parsing.py` — validates the protobuf → dict parsing logic
-  against a synthetic feed (passing).
+- `test_parsing.py` — validates the protobuf → dict parsing logic for
+  both alerts and trip updates against synthetic feeds, plus
+  `search_stations()` against the real bundled station data (passing).
 - `fetch_alerts()` against the **real, live** MTA feed — confirmed
   working (Sept 2026). This caught a real bug: the feed URL's
   `camsys/subway-alerts` path segment needs its `/` percent-encoded
@@ -30,7 +43,16 @@ a free key from https://bustime.mta.info/wiki/Developers/Index.
 - Full MCP round trip verified locally on Python 3.14: `server.py
   --http` boots, responds to `initialize`, and a real `tools/call` for
   `get_subway_alerts` (lines `["7","E","M","G"]`) returns live,
-  correctly filtered alert data end-to-end.
+  correctly filtered alert data end-to-end. `find_stations` verified
+  the same way (fully offline — no network dependency).
+- The 8 per-line trip-update feed URLs (`TRIP_UPDATE_FEED_URLS` in
+  `mta_feeds.py`) follow the exact same host + `%2F`-encoding pattern
+  already confirmed live for the alerts feed, and match what
+  established NYC subway GTFS-rt clients use. They could **not** be
+  live-tested from the environment these tools were built in (its
+  network policy blocks `api-endpoint.mta.info` outright, the same
+  host the already-working alerts feed uses) — verify `get_next_trains`
+  against the real feed once deployed.
 
 Note: `server.py` needs Python **3.10+** (the `mcp` package's
 minimum) — the type hints in `server.py` also rely on this, since
@@ -95,12 +117,26 @@ your Fly.io server → MTA, and back.
 - "Any delays on the E, M, or G right now?"
 - "Are any subway lines not running today?"
 - "What's going on with the 7 train?"
+- "When's the next 6 train at Union Sq?"
+- "Which lines stop at 103 St?"
 
 ## Known limitations / next steps if you want to extend this
 
 - Alert text comes straight from MTA's feed — no rewriting or
   summarizing happens server-side; Claude does that in conversation.
 - No caching — every tool call hits MTA fresh. Fine at personal-use
-  volume; add a short in-memory cache if you start calling it a lot.
-- If MTA ever moves the alerts feed URL, update `ALERTS_FEED_URL` in
-  `mta_feeds.py`.
+  volume; add a short in-memory cache if you start calling it a lot
+  (trip-update feeds refresh roughly every 30s server-side, so caching
+  more aggressively than that just adds staleness for no benefit).
+- If MTA ever moves the alerts or trip-update feed URLs, update
+  `ALERTS_FEED_URL` / `TRIP_UPDATE_FEED_URLS` in `mta_feeds.py`.
+- `data/stations.csv` is a static snapshot built from MTA's GTFS bundle
+  (stops.txt + trips.txt + stop_times.txt) — station names/ids/routes
+  essentially never change, but if MTA opens a new station or
+  reroutes a line permanently, this needs regenerating from a fresh
+  `https://rrgtfsfeeds.s3.amazonaws.com/gtfs_subway.zip`.
+- No live directions/trip-planning tool (see above) — `find_stations`
+  + `get_next_trains` + `get_subway_alerts` together answer "what's
+  running and when's the next train," but not "what's the best way to
+  get from A to B." Building that would mean routing over the static
+  GTFS graph yourself (or wiring in an external directions API).

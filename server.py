@@ -22,7 +22,13 @@ import sys
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from mta_feeds import KNOWN_LINES, fetch_alerts
+from mta_feeds import KNOWN_LINES, fetch_alerts, fetch_next_trains, search_stations
+
+# Cap how many distinct real-world stations a fuzzy get_next_trains()
+# query is allowed to resolve to before we bail and ask for something
+# more specific — several genuinely different stations share names like
+# "103 St", and fetching live feeds for a dozen of them isn't useful.
+_MAX_STATION_MATCHES = 6
 
 # FastMCP's DNS-rebinding protection defaults to only trusting
 # localhost/127.0.0.1 Host headers, which 421s every request once this
@@ -88,6 +94,105 @@ def get_subway_alerts(lines: list[str] | None = None) -> dict:
         result["lines_with_no_reported_issues"] = clear
 
     return result
+
+
+@mcp.tool()
+def find_stations(query: str) -> dict:
+    """
+    Look up NYC subway stations by name, to get the stop info needed by
+    get_next_trains (or just to check which lines serve a station).
+
+    Args:
+        query: free-text station name, e.g. "times sq", "union sq", "103 st".
+
+    Returns:
+        A dict with "matches": a list of {stop_id, name, lat, lon, routes}.
+        Several distinct real-world stations can share a name (e.g. there
+        are four different "103 St" stations) — all of them come back;
+        disambiguate using the "routes" each one serves.
+    """
+    matches = search_stations(query)
+    return {
+        "query": query,
+        "matches": [
+            {**m, "routes": sorted(m["routes"])} for m in matches
+        ],
+    }
+
+
+@mcp.tool()
+def get_next_trains(station: str, lines: list[str] | None = None, limit: int = 6) -> dict:
+    """
+    Get live predicted arrival times at a subway station.
+
+    Args:
+        station: free-text station name, e.g. "Times Sq", "Union Sq", "125 St".
+        lines: optional list of route letters/numbers to restrict to, e.g.
+               ["4", "5", "6"]. Also disambiguates when the station name
+               alone matches more than one real-world station.
+        limit: max arrivals to return per matched station (combined across
+               both directions, soonest first).
+
+    Returns:
+        A dict with "stations": a list of
+        {name, stop_id, routes, arrivals: [{route, direction, minutes_away}]}
+        — one entry per real-world station the name resolved to, soonest
+        arrivals first. "direction" is MTA's platform code: "N" is
+        typically uptown/Bronx-bound and "S" downtown/Brooklyn-bound,
+        though that convention gets fuzzy on lines that don't run
+        north-south (e.g. L, G, 7).
+        If the name is ambiguous (matches too many distinct stations) or
+        doesn't match anything, returns an "error" instead — narrow with
+        `lines` or a more specific name.
+    """
+    wanted_lines = None
+    if lines:
+        wanted_lines = {l.upper() for l in lines}
+        unknown = [l for l in wanted_lines if l not in KNOWN_LINES]
+        if unknown:
+            return {
+                "error": f"Unrecognized line(s): {unknown}. "
+                         f"Known lines: {sorted(KNOWN_LINES)}"
+            }
+
+    matches = search_stations(station)
+    if wanted_lines:
+        matches = [m for m in matches if wanted_lines & m["routes"]]
+
+    if not matches:
+        return {"error": f"No station found matching '{station}'."}
+    if len(matches) > _MAX_STATION_MATCHES:
+        return {
+            "error": f"'{station}' matches {len(matches)} different stations — "
+                     f"be more specific or pass `lines` to narrow it down.",
+            "candidates": sorted({m["name"] for m in matches}),
+        }
+
+    stop_ids_needed = {f"{m['stop_id']}{d}" for m in matches for d in ("N", "S")}
+    feed_lines = wanted_lines if wanted_lines else {r for m in matches for r in m["routes"]}
+    arrivals = fetch_next_trains(stop_ids_needed, feed_lines)
+
+    stations_out = []
+    for m in matches:
+        station_lines = (wanted_lines & m["routes"]) if wanted_lines else m["routes"]
+        station_stop_ids = {f"{m['stop_id']}{d}" for d in ("N", "S")}
+        station_arrivals = [
+            {
+                "route": a["route"],
+                "direction": a["direction"],
+                "minutes_away": a["minutes_away"],
+            }
+            for a in arrivals
+            if a["stop_id"] in station_stop_ids and a["route"] in station_lines
+        ][:limit]
+        stations_out.append({
+            "name": m["name"],
+            "stop_id": m["stop_id"],
+            "routes": sorted(station_lines),
+            "arrivals": station_arrivals,
+        })
+
+    return {"station_query": station, "stations": stations_out}
 
 
 if __name__ == "__main__":
